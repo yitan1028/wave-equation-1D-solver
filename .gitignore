@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Generated outputs
+outputs/
+
+# Zip packages
+*.zip
+
+# Jupyter
+.ipynb_checkpoints/
