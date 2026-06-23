@@ -189,29 +189,34 @@ def plot_wavefield_image(result: SolverResult, output_dir: str | Path) -> Path:
 
 
 def _format_update_text(ex: dict) -> str:
-    return (
-        r"$u_i^{n+1}=2u_i^n-u_i^{n-1}+\alpha_i(u_{i+1}^n-2u_i^n+u_{i-1}^n)+s_i^n$"
-        "\n\n"
-        f"Selected point: x_i = {ex['x']:.1f} m\n"
-        f"v_i = {ex['v']:.1f} m/s,  dt = {ex['dt']:.4f} s,  dx = {ex['dx']:.1f} m\n"
-        f"alpha_i = (v_i dt / dx)^2 = {ex['alpha']:.5f}\n\n"
-        f"u_i^(n-1) = {ex['u_prev_i']:+.6f}\n"
-        f"u_(i-1)^n = {ex['u_curr_im1']:+.6f}\n"
-        f"u_i^n     = {ex['u_curr_i']:+.6f}\n"
-        f"u_(i+1)^n = {ex['u_curr_ip1']:+.6f}\n\n"
-        f"curvature = u_(i+1)^n - 2u_i^n + u_(i-1)^n\n"
-        f"          = {ex['curvature']:+.6f}\n"
-        f"alpha_i * curvature = {ex['alpha_times_curvature']:+.6f}\n"
-        f"source term here = {ex['source_term']:+.6f}\n\n"
-        f"u_i^(n+1) before damping = {ex['u_next_after_source']:+.6f}\n"
-        f"damping factor = {ex['damping_factor']:.6f}\n"
-        f"u_i^(n+1) after damping  = {ex['u_next_after_damping']:+.6f}"
-    )
+    return "\n".join([
+        rf"Selected point: $x_i={ex['x']:.1f}\ \mathrm{{m}}$",
+        rf"$v_i={ex['v']:.1f}\ \mathrm{{m/s}},\quad \Delta t={ex['dt']:.4f}\ \mathrm{{s}},\quad \Delta x={ex['dx']:.1f}\ \mathrm{{m}}$",
+        rf"$\alpha_i=(v_i\Delta t/\Delta x)^2={ex['alpha']:.6f}$",
+        "",
+        rf"$u_i^{{n-1}}={ex['u_prev_i']:+.6e}$",
+        rf"$u_{{i-1}}^n={ex['u_curr_im1']:+.6e}$",
+        rf"$u_i^n={ex['u_curr_i']:+.6e}$",
+        rf"$u_{{i+1}}^n={ex['u_curr_ip1']:+.6e}$",
+        "",
+        rf"$u_{{i+1}}^n-2u_i^n+u_{{i-1}}^n={ex['curvature']:+.6e}$",
+        rf"$\alpha_i\,\mathrm{{curvature}}={ex['alpha_times_curvature']:+.6e}$",
+        rf"$s_i^n={ex['source_term']:+.6e}$",
+        "",
+        rf"$u_i^{{n+1}}$ before damping $={ex['u_next_after_source']:+.6e}$",
+        rf"damping factor $={ex['damping_factor']:.6f}$",
+        rf"$u_i^{{n+1}}$ after damping $={ex['u_next_after_damping']:+.6e}$",
+    ])
 
 
-def plot_numerical_update_examples(result: SolverResult, output_dir: str | Path) -> Path:
+def plot_numerical_update_examples(
+    result: SolverResult,
+    output_dir: str | Path,
+    filename: str = "07_numerical_update_examples.png",
+    title: str = "Concrete finite-difference calculations at one selected receiver/grid point",
+) -> Path:
     output_dir = ensure_output_dir(output_dir)
-    path = output_dir / "07_numerical_update_examples.png"
+    path = output_dir / filename
 
     examples = result.calculation_examples[:3]
     if not examples:
@@ -221,7 +226,7 @@ def plot_numerical_update_examples(result: SolverResult, output_dir: str | Path)
     if ymax == 0:
         ymax = 1.0
 
-    fig, axes = plt.subplots(len(examples), 2, figsize=(16, 4.8 * len(examples)), gridspec_kw={"width_ratios": [1.18, 1.05]})
+    fig, axes = plt.subplots(len(examples), 2, figsize=(18, 5.2 * len(examples)), gridspec_kw={"width_ratios": [1.05, 1.25]})
     if len(examples) == 1:
         axes = np.array([axes])
 
@@ -238,16 +243,16 @@ def plot_numerical_update_examples(result: SolverResult, output_dir: str | Path)
         xmax = min(result.x[-1], ex["x"] + half_width)
         mask = (result.x >= xmin) & (result.x <= xmax)
 
-        ax_wave.plot(result.x[mask], u[mask], linewidth=2.0)
-        ax_wave.axvline(result.x[i], linestyle="-.", label="selected point i")
+        ax_wave.plot(result.x[mask], u[mask], linewidth=2.1, color="tab:blue")
+        ax_wave.axvline(result.x[i], linestyle="-.", color="black", linewidth=1.6, label="selected point i")
 
         xs = [result.x[i - 1], result.x[i], result.x[i + 1]]
         ys = [u[i - 1], u[i], u[i + 1]]
-        ax_wave.scatter(xs, ys, s=75, zorder=5)
+        ax_wave.scatter(xs, ys, s=95, zorder=5, color=["tab:orange", "tab:red", "tab:orange"], edgecolor="black", linewidth=0.7)
         for xx, yy, lab in zip(xs, ys, [r"$i-1$", r"$i$", r"$i+1$"]):
             ax_wave.annotate(lab, xy=(xx, yy), xytext=(0, 15), textcoords="offset points", ha="center", fontsize=13)
 
-        ax_wave.set_title(f"Local stencil at step n={step}, t={ex['time']:.3f} s")
+        ax_wave.set_title(f"Layered reflection case: local stencil at n={step}, t={ex['time']:.3f} s")
         ax_wave.set_xlabel("Position x (m)")
         ax_wave.set_ylabel("Current amplitude u^n")
         ax_wave.grid(True, alpha=0.3)
@@ -255,9 +260,26 @@ def plot_numerical_update_examples(result: SolverResult, output_dir: str | Path)
         ax_wave.set_ylim(-1.15 * ymax, 1.15 * ymax)
 
         ax_text.axis("off")
-        ax_text.text(0.02, 0.98, _format_update_text(ex), va="top", ha="left", fontsize=10.5, family="monospace", bbox=dict(boxstyle="round,pad=0.6", facecolor="white", edgecolor="0.75"))
+        ax_text.text(
+            0.02,
+            0.98,
+            r"$u_i^{n+1}=2u_i^n-u_i^{n-1}+\alpha_i(u_{i+1}^n-2u_i^n+u_{i-1}^n)+s_i^n$",
+            va="top",
+            ha="left",
+            fontsize=16,
+        )
+        ax_text.text(
+            0.02,
+            0.80,
+            _format_update_text(ex),
+            va="top",
+            ha="left",
+            fontsize=12.2,
+            linespacing=1.55,
+            bbox=dict(boxstyle="round,pad=0.75", facecolor="white", edgecolor="0.72"),
+        )
 
-    fig.suptitle("Concrete finite-difference calculations at one selected receiver/grid point", fontsize=18, y=0.995)
+    fig.suptitle(title, fontsize=20, y=0.997)
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)

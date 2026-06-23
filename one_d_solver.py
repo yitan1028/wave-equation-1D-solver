@@ -36,7 +36,7 @@ class SolverConfig:
     dt: float = 0.0008
 
     # Velocity model
-    # Options: "smooth_variable", "two_layer", "constant"
+    # Options: "smooth_variable", "two_layer", "three_layer_reflection", "constant"
     velocity_model: str = "smooth_variable"
     velocity_value: float = 2000.0
 
@@ -57,6 +57,9 @@ class SolverConfig:
     # Numerical update explanation
     calculation_receiver_x: float = 2100.0
     calculation_steps: Optional[Sequence[int]] = None
+
+    # Optional directional initial packet; appended for positional compatibility.
+    source_direction: str = "both"
 
 
 @dataclass
@@ -118,8 +121,14 @@ def make_velocity_model(config: SolverConfig) -> np.ndarray:
         v[x >= 0.58 * L] = 2600.0
         return v
 
+    if config.velocity_model == "three_layer_reflection":
+        v = np.full(config.nx, 3000.0, dtype=float)
+        v[x >= 0.35 * L] = 2200.0
+        v[x >= 0.65 * L] = 1500.0
+        return v
+
     raise ValueError(
-        f"Unknown velocity_model={config.velocity_model!r}. Use 'smooth_variable', 'two_layer', or 'constant'."
+        f"Unknown velocity_model={config.velocity_model!r}. Use 'smooth_variable', 'two_layer', 'three_layer_reflection', or 'constant'."
     )
 
 
@@ -182,6 +191,11 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
     if config is None:
         config = SolverConfig()
 
+    if config.source_direction not in {"both", "right"}:
+        raise ValueError(
+            f"Unknown source_direction={config.source_direction!r}. Use 'both' or 'right'."
+        )
+
     x = np.arange(config.nx, dtype=float) * config.dx
     t = np.arange(config.nt, dtype=float) * config.dt
 
@@ -216,6 +230,17 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
     u_curr = np.zeros(config.nx, dtype=float)  # u at n
     u_next = np.zeros(config.nx, dtype=float)  # u at n+1
 
+    if config.source_direction == "right":
+        v_source = velocity[source_index]
+        t0 = 1.5 / config.source_frequency
+        packet_time = t0 - (x - config.source_x) / v_source
+        packet = ricker_wavelet(
+            config.source_frequency,
+            np.concatenate((packet_time, packet_time - config.dt)),
+        )
+        u_curr = config.source_strength * packet[: config.nx]
+        u_prev = config.source_strength * packet[config.nx :]
+
     wavefield_history = np.zeros((config.nt, config.nx), dtype=float)
     receiver_data = np.zeros((config.nt, len(receiver_indices)), dtype=float)
 
@@ -229,10 +254,15 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
         u_next.fill(0.0)
         u_next[1:-1] = 2.0 * u_curr[1:-1] - u_prev[1:-1] + alpha[1:-1] * curvature[1:-1]
 
-        # Source injection at the source grid point.
-        source_term_at_calculation_point = source_signal[n] if calculation_index == source_index else 0.0
+        # The default mode retains the original point-source injection exactly.
+        source_term_at_calculation_point = (
+            source_signal[n]
+            if config.source_direction == "both" and calculation_index == source_index
+            else 0.0
+        )
         u_next_before_source = u_next.copy()
-        u_next[source_index] += source_signal[n]
+        if config.source_direction == "both":
+            u_next[source_index] += source_signal[n]
         u_next_after_source = u_next.copy()
 
         # Damping near boundaries.
