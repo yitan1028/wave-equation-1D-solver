@@ -25,16 +25,20 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 import numpy as np
 
-from one_d_solver import SolverConfig, SolverResult, run_1d_forward
+from one_d_solver import (
+    SolverConfig,
+    SolverResult,
+    run_1d_forward,
+)
 
 
 LAYER_VELOCITIES = (3000.0, 2200.0, 1500.0)
-INTERFACE_FRACTIONS = (0.35, 0.65)
+INTERFACE_POSITIONS_M = (1050.0, 1950.0)
+PHYSICAL_MODEL_END_M = 3000.0
 
 
 def interface_positions(result: SolverResult) -> list[float]:
-    length = result.x[-1] - result.x[0]
-    return [result.x[0] + frac * length for frac in INTERFACE_FRACTIONS]
+    return list(INTERFACE_POSITIONS_M)
 
 
 def mark_geometry(ax, result: SolverResult, interfaces: list[float], receivers: bool = True) -> None:
@@ -55,6 +59,7 @@ def plot_velocity_model(result: SolverResult, output_dir: Path, interfaces: list
     ax.set_title("Three-layer velocity model for reflection testing")
     ax.set_xlabel("Position x (m)")
     ax.set_ylabel("Velocity v(x) (m/s)")
+    ax.set_xlim(0.0, PHYSICAL_MODEL_END_M)
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best")
     fig.tight_layout()
@@ -90,6 +95,7 @@ def plot_wave_snapshots(result: SolverResult, output_dir: Path, interfaces: list
         ax.plot(result.x, result.wavefield_history[step], linewidth=1.6)
         mark_geometry(ax, result, interfaces, receivers=False)
         ax.set_ylim(-1.15 * ymax, 1.15 * ymax)
+        ax.set_xlim(0.0, PHYSICAL_MODEL_END_M)
         ax.set_title(f"Wavefield at t = {result.t[step]:.3f} s")
         ax.set_ylabel("Amplitude")
         ax.grid(True, alpha=0.3)
@@ -104,12 +110,12 @@ def plot_wave_snapshots(result: SolverResult, output_dir: Path, interfaces: list
 def plot_receiver_traces(result: SolverResult, output_dir: Path, interfaces: list[float]) -> Path:
     path = output_dir / "04_receiver_traces.png"
     selected_xs = [
-        result.x[0] + 0.08 * (result.x[-1] - result.x[0]),
-        result.x[0] + 0.20 * (result.x[-1] - result.x[0]),
-        result.x[0] + 0.32 * (result.x[-1] - result.x[0]),
-        result.x[0] + 0.50 * (result.x[-1] - result.x[0]),
-        result.x[0] + 0.78 * (result.x[-1] - result.x[0]),
-        result.x[0] + 0.92 * (result.x[-1] - result.x[0]),
+        0.08 * PHYSICAL_MODEL_END_M,
+        0.20 * PHYSICAL_MODEL_END_M,
+        0.32 * PHYSICAL_MODEL_END_M,
+        0.50 * PHYSICAL_MODEL_END_M,
+        0.78 * PHYSICAL_MODEL_END_M,
+        0.92 * PHYSICAL_MODEL_END_M,
     ]
     selected = [int(np.argmin(np.abs(result.receiver_xs - xpos))) for xpos in selected_xs]
     selected = sorted(set(selected))
@@ -143,6 +149,15 @@ def plot_seismic_record(result: SolverResult, output_dir: Path, interfaces: list
     fig, ax = plt.subplots(figsize=(10, 6.4))
     im = ax.imshow(result.receiver_data, aspect="auto", extent=extent, vmin=-vmax, vmax=vmax, cmap="seismic")
     mark_geometry(ax, result, interfaces, receivers=False)
+    subset = np.linspace(0, len(result.receiver_xs) - 1, 13, dtype=int)
+    for k, r in enumerate(subset):
+        ax.axvline(
+            result.receiver_xs[r],
+            color="0.25",
+            linestyle=":",
+            alpha=0.30,
+            label="Receivers" if k == 0 else None,
+        )
     ax.set_title("Seismic record: time by receiver position")
     ax.set_xlabel("Receiver position x (m)")
     ax.set_ylabel("Time (s)")
@@ -165,6 +180,7 @@ def plot_wavefield_image(result: SolverResult, output_dir: Path, interfaces: lis
     fig, ax = plt.subplots(figsize=(11, 6.8))
     im = ax.imshow(result.wavefield_history, aspect="auto", extent=extent, vmin=-vmax, vmax=vmax, cmap="seismic")
     mark_geometry(ax, result, interfaces, receivers=True)
+    ax.set_xlim(0.0, PHYSICAL_MODEL_END_M)
     ax.set_title("Full simulated wavefield x-t image with interfaces")
     ax.set_xlabel("Position x (m)")
     ax.set_ylabel("Time (s)")
@@ -187,7 +203,7 @@ def animate_wavefield(result: SolverResult, output_dir: Path, interfaces: list[f
     line, = ax.plot([], [], linewidth=1.7)
     time_text = ax.text(0.02, 0.90, "", transform=ax.transAxes)
     mark_geometry(ax, result, interfaces, receivers=False)
-    ax.set_xlim(result.x[0], result.x[-1])
+    ax.set_xlim(0.0, PHYSICAL_MODEL_END_M)
     ax.set_ylim(-1.15 * ymax, 1.15 * ymax)
     ax.set_title("Wave propagation in the three-layer model")
     ax.set_xlabel("Position x (m)")
@@ -221,7 +237,7 @@ def main() -> None:
     domain_length = (nx - 1) * dx
     # The first 400 m is the left damping region, so place the source just beyond it.
     source_x = 450.0
-    receiver_xs = np.linspace(0.03 * domain_length, 0.97 * domain_length, 121)
+    receiver_xs = np.linspace(450.0, 2550.0, 121)
 
     config = SolverConfig(
         nx=nx,
@@ -236,10 +252,13 @@ def main() -> None:
         receiver_xs=receiver_xs,
         damping_cells=80,
         damping_strength=0.040,
-        calculation_receiver_x=0.50 * domain_length,
+        calculation_receiver_x=0.50 * PHYSICAL_MODEL_END_M,
     )
     result = run_1d_forward(config)
     interfaces = interface_positions(result)
+    left_padding_range = [float(result.x[0]), 0.0]
+    right_padding_range = [domain_length, float(result.x[-1])]
+    physical_mask = (result.x >= 0.0) & (result.x <= domain_length)
 
     np.save(OUTPUT_DIR / "wavefield_history_t_by_x.npy", result.wavefield_history)
     np.save(OUTPUT_DIR / "receiver_data_t_by_receiver.npy", result.receiver_data)
@@ -260,13 +279,32 @@ def main() -> None:
 
     metadata = {
         "velocity_model": config.velocity_model,
-        "pde": "u_tt = v(x)^2 u_xx + source",
-        "finite_difference_update": "u_next[i] = 2*u_curr[i] - u_prev[i] + (v[i]*dt/dx)^2*(u_curr[i+1]-2*u_curr[i]+u_curr[i-1]) + source_term",
+        "pde": "u_tt + sigma(x)*u_t = v(x)^2 u_xx + source",
+        "finite_difference_update": "u_next[i] = (2*u_curr[i] - (1-kappa[i])*u_prev[i] + (v[i]*dt/dx)^2*(u_curr[i+1]-2*u_curr[i]+u_curr[i-1]))/(1+kappa[i]) + source_term, kappa=sigma*dt",
         "layer_velocities_m_per_s": list(LAYER_VELOCITIES),
         "interface_positions_m": [float(xpos) for xpos in interfaces],
+        "physical_nx": int(config.nx),
+        "total_nx": int(len(result.x)),
+        "physical_x_range_m": [0.0, domain_length],
+        "computational_x_range_m": [float(result.x[0]), float(result.x[-1])],
         "source_position_m": float(result.x[result.source_index]),
+        "source_index": int(result.source_index),
         "source_direction": config.source_direction,
+        "nbc": int(config.damping_cells),
+        "damping_strength": float(config.damping_strength),
+        "left_padding_range_m": left_padding_range,
+        "right_padding_range_m": right_padding_range,
+        "left_padding_velocity_m_per_s": float(result.velocity[0]),
+        "right_padding_velocity_m_per_s": float(result.velocity[-1]),
         "receiver_range_m": [float(receiver_xs[0]), float(receiver_xs[-1])],
+        "receiver_index_range": [
+            int(result.receiver_indices[0]),
+            int(result.receiver_indices[-1]),
+        ],
+        "sigma_max_per_s": float(np.max(result.sigma)),
+        "sigma_max_in_physical_region_per_s": float(
+            np.max(result.sigma[physical_mask])
+        ),
         "dx_m": float(config.dx),
         "dt_s": float(config.dt),
         "cfl": float(result.cfl),
@@ -288,6 +326,21 @@ def main() -> None:
     print(f"dx: {config.dx:.3f} m")
     print(f"dt: {config.dt:.6f} s")
     print(f"CFL number: {result.cfl:.3f}")
+    print(f"Physical x range: 0.0-{domain_length:.1f} m")
+    print(f"Computational x range: {result.x[0]:.1f}-{result.x[-1]:.1f} m")
+    print(f"Padding cells per side: {config.damping_cells}")
+    print(f"Damping strength: {config.damping_strength:.3f}")
+    print(f"Left padding range: {left_padding_range[0]:.1f}-{left_padding_range[1]:.1f} m")
+    print(f"Right padding range: {right_padding_range[0]:.1f}-{right_padding_range[1]:.1f} m")
+    print(f"Left replicated padding velocity: {result.velocity[0]:.1f} m/s")
+    print(f"Right replicated padding velocity: {result.velocity[-1]:.1f} m/s")
+    print(f"Source computational index: {result.source_index}")
+    print(
+        "Receiver computational index range: "
+        f"{result.receiver_indices[0]}-{result.receiver_indices[-1]}"
+    )
+    print(f"Receiver range: {receiver_xs[0]:.1f}-{receiver_xs[-1]:.1f} m")
+    print(f"Sigma max: {np.max(result.sigma):.12f} 1/s")
     print("Generated outputs:")
     for path in paths:
         print(f"  {path}")

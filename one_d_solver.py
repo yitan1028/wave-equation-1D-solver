@@ -8,13 +8,18 @@ V3 changes:
 - Output keeps enough intermediate values to show exact finite-difference updates.
 - The numerical example selects one receiver/grid point and three time steps near wave arrival.
 
-PDE:
-    u_tt = v(x)^2 u_xx + source
+PDE in the external padding:
+    u_tt + sigma(x) u_t = v(x)^2 u_xx + source
 
 Finite-difference update:
-    u_next[i] = 2*u_curr[i] - u_prev[i]
-                + (v[i]*dt/dx)^2 * (u_curr[i+1] - 2*u_curr[i] + u_curr[i-1])
-                + source_term
+    u_next[i] = (2*u_curr[i] - (1-kappa[i])*u_prev[i]
+                 + (v[i]*dt/dx)^2
+                   * (u_curr[i+1] - 2*u_curr[i] + u_curr[i-1]))
+                / (1+kappa[i]) + source_term
+    kappa = sigma*dt
+
+Inside the physical model sigma is exactly zero, so this reduces exactly to
+the original undamped update.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import numpy as np
 
 @dataclass
 class SolverConfig:
-    # Spatial grid
+    # Physical spatial grid. Boundary padding is added by run_1d_forward.
     nx: int = 601
     dx: float = 5.0
 
@@ -50,7 +55,7 @@ class SolverConfig:
     receiver_xs: Optional[Sequence[float]] = None
     n_receivers: int = 61
 
-    # Boundary damping
+    # Number of external absorbing-boundary cells on each side.
     damping_cells: int = 80
     damping_strength: float = 0.040
 
@@ -73,7 +78,7 @@ class SolverResult:
     receiver_xs: np.ndarray
     wavefield_history: np.ndarray
     receiver_data: np.ndarray
-    damping_profile: np.ndarray
+    sigma: np.ndarray
     cfl: float
     calculation_index: int
     calculation_examples: list[dict]
@@ -123,8 +128,8 @@ def make_velocity_model(config: SolverConfig) -> np.ndarray:
 
     if config.velocity_model == "three_layer_reflection":
         v = np.full(config.nx, 3000.0, dtype=float)
-        v[x >= 0.35 * L] = 2200.0
-        v[x >= 0.65 * L] = 1500.0
+        v[x >= 1050.0] = 2200.0
+        v[x >= 1950.0] = 1500.0
         return v
 
     raise ValueError(
@@ -133,19 +138,49 @@ def make_velocity_model(config: SolverConfig) -> np.ndarray:
 
 
 def make_damping_profile(nx: int, damping_cells: int, damping_strength: float) -> np.ndarray:
-    """Simple multiplicative absorbing/damping layer near both boundaries."""
+    """Smooth multiplicative absorbing/damping layer near both boundaries."""
     profile = np.ones(nx, dtype=float)
     if damping_cells <= 0:
         return profile
 
     damping_cells = min(damping_cells, nx // 2)
-    for i in range(damping_cells):
-        # strongest damping at the outer edge, smoothly decays to 1.0 inside
-        r = (damping_cells - i) / damping_cells
-        factor = np.exp(-damping_strength * r**2)
-        profile[i] *= factor
-        profile[-i - 1] *= factor
+    if damping_cells <= 1:
+        factor = np.exp(-damping_strength)
+        profile[0] = factor
+        profile[-1] = factor
+        return profile
+
+    q = np.linspace(1.0, 0.0, damping_cells)
+    smooth = q**3 * (q * (q * 6.0 - 15.0) + 10.0)
+    edge_profile = np.exp(-damping_strength * smooth)
+
+    # Make the innermost sponge cell exactly transparent.
+    edge_profile[-1] = 1.0
+    profile[:damping_cells] = edge_profile
+    profile[-damping_cells:] = edge_profile[::-1]
     return profile
+
+
+def make_absorbing_sigma(
+    total_nx: int,
+    nbc: int,
+    dx: float,
+    velmin: float,
+) -> tuple[np.ndarray, float]:
+    """Quadratic absorbing coefficient in external padding cells only."""
+    sigma = np.zeros(total_nx, dtype=float)
+    if nbc <= 0:
+        return sigma, 0.0
+    if nbc == 1:
+        padding_width = dx
+    else:
+        padding_width = (nbc - 1) * dx
+
+    sigma_max = 3.0 * velmin * np.log(1.0e7) / (2.0 * padding_width)
+    ramp = np.linspace(1.0, 0.0, nbc) ** 2
+    sigma[:nbc] = sigma_max * ramp
+    sigma[-nbc:] = sigma_max * ramp[::-1]
+    return sigma, float(sigma_max)
 
 
 def choose_default_receivers(x: np.ndarray, n_receivers: int) -> np.ndarray:
@@ -196,16 +231,20 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
             f"Unknown source_direction={config.source_direction!r}. Use 'both' or 'right'."
         )
 
-    x = np.arange(config.nx, dtype=float) * config.dx
+    physical_x = np.arange(config.nx, dtype=float) * config.dx
+    nbc = max(0, int(config.damping_cells))
+    total_nx = config.nx + 2 * nbc
+    x = (np.arange(total_nx, dtype=float) - nbc) * config.dx
     t = np.arange(config.nt, dtype=float) * config.dt
 
-    velocity = make_velocity_model(config)
+    physical_velocity = make_velocity_model(config)
+    velocity = np.pad(physical_velocity, (nbc, nbc), mode="edge")
     cfl = check_cfl(velocity, config.dt, config.dx)
 
     source_index = int(np.argmin(np.abs(x - config.source_x)))
 
     if config.receiver_xs is None:
-        receiver_xs = choose_default_receivers(x, config.n_receivers)
+        receiver_xs = choose_default_receivers(physical_x, config.n_receivers)
     else:
         receiver_xs = np.asarray(config.receiver_xs, dtype=float)
     receiver_indices = positions_to_indices(x, receiver_xs)
@@ -221,14 +260,14 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
         config.source_frequency, t
     )
 
-    damping_profile = make_damping_profile(
-        config.nx, config.damping_cells, config.damping_strength
+    sigma, _ = make_absorbing_sigma(
+        total_nx, nbc, config.dx, float(np.min(velocity))
     )
 
     # Three time levels used in the leapfrog finite-difference update.
-    u_prev = np.zeros(config.nx, dtype=float)  # u at n-1
-    u_curr = np.zeros(config.nx, dtype=float)  # u at n
-    u_next = np.zeros(config.nx, dtype=float)  # u at n+1
+    u_prev = np.zeros(total_nx, dtype=float)  # u at n-1
+    u_curr = np.zeros(total_nx, dtype=float)  # u at n
+    u_next = np.zeros(total_nx, dtype=float)  # u at n+1
 
     if config.source_direction == "right":
         v_source = velocity[source_index]
@@ -238,21 +277,35 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
             config.source_frequency,
             np.concatenate((packet_time, packet_time - config.dt)),
         )
-        u_curr = config.source_strength * packet[: config.nx]
-        u_prev = config.source_strength * packet[config.nx :]
+        u_curr = config.source_strength * packet[:total_nx]
+        u_prev = config.source_strength * packet[total_nx:]
 
-    wavefield_history = np.zeros((config.nt, config.nx), dtype=float)
+    wavefield_history = np.zeros((config.nt, total_nx), dtype=float)
     receiver_data = np.zeros((config.nt, len(receiver_indices)), dtype=float)
 
     alpha = (velocity * config.dt / config.dx) ** 2
+    kappa = sigma * config.dt
     calculation_examples: list[dict] = []
 
     for n in range(config.nt):
-        curvature = np.zeros(config.nx, dtype=float)
+        curvature = np.zeros(total_nx, dtype=float)
         curvature[1:-1] = u_curr[2:] - 2.0 * u_curr[1:-1] + u_curr[:-2]
 
         u_next.fill(0.0)
-        u_next[1:-1] = 2.0 * u_curr[1:-1] - u_prev[1:-1] + alpha[1:-1] * curvature[1:-1]
+        u_next[1:-1] = (
+            2.0 * u_curr[1:-1]
+            - (1.0 - kappa[1:-1]) * u_prev[1:-1]
+            + alpha[1:-1] * curvature[1:-1]
+        ) / (1.0 + kappa[1:-1])
+
+        c_left = velocity[0] * config.dt / config.dx
+        c_right = velocity[-1] * config.dt / config.dx
+        u_next[0] = u_curr[1] + ((c_left - 1.0) / (c_left + 1.0)) * (
+            u_next[1] - u_curr[0]
+        )
+        u_next[-1] = u_curr[-2] + ((c_right - 1.0) / (c_right + 1.0)) * (
+            u_next[-2] - u_curr[-1]
+        )
 
         # The default mode retains the original point-source injection exactly.
         source_term_at_calculation_point = (
@@ -265,14 +318,14 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
             u_next[source_index] += source_signal[n]
         u_next_after_source = u_next.copy()
 
-        # Damping near boundaries.
-        u_next *= damping_profile
-
         if n in calculation_step_set:
             i = calculation_index
-            raw_next = 2.0 * u_curr[i] - u_prev[i] + alpha[i] * curvature[i]
+            raw_next = (
+                2.0 * u_curr[i]
+                - (1.0 - kappa[i]) * u_prev[i]
+                + alpha[i] * curvature[i]
+            ) / (1.0 + kappa[i])
             after_source = raw_next + source_term_at_calculation_point
-            after_damping = after_source * damping_profile[i]
 
             calculation_examples.append({
                 "step": int(n),
@@ -290,10 +343,12 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
                 "curvature": float(curvature[i]),
                 "alpha_times_curvature": float(alpha[i] * curvature[i]),
                 "source_term": float(source_term_at_calculation_point),
-                "damping_factor": float(damping_profile[i]),
+                "sigma": float(sigma[i]),
+                "kappa": float(kappa[i]),
+                "damping_factor": 1.0,
                 "u_next_before_source": float(raw_next),
                 "u_next_after_source": float(after_source),
-                "u_next_after_damping": float(after_damping),
+                "u_next_after_damping": float(after_source),
                 "u_prev_array": u_prev.copy(),
                 "u_curr_array": u_curr.copy(),
                 "u_next_before_source_array": u_next_before_source.copy(),
@@ -318,7 +373,7 @@ def run_1d_forward(config: Optional[SolverConfig] = None) -> SolverResult:
         receiver_xs=receiver_xs,
         wavefield_history=wavefield_history,
         receiver_data=receiver_data,
-        damping_profile=damping_profile,
+        sigma=sigma,
         cfl=cfl,
         calculation_index=calculation_index,
         calculation_examples=calculation_examples,
