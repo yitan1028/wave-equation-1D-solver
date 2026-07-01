@@ -16,7 +16,7 @@ pip install -r requirements.txt
 # Remove old outputs so stale figures cannot be confused with this version.
 rm -rf outputs
 
-python run_1d_demo.py
+python run_1d_layered_reflection_demo.py
 
 echo
-echo "Done. Open outputs/VERSION.txt and outputs/01_velocity_model.png."
+echo "Done. Open outputs/layered_reflection_demo/metadata.json and outputs/layered_reflection_demo/01_velocity_model_layers.png."

@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 OUTPUT_DIR = Path("outputs") / "layered_reflection_demo"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR = Path(tempfile.gettempdir()) / "wave_equation_1d_solver_matplotlib"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLBACKEND", "Agg")
-os.environ.setdefault("MPLCONFIGDIR", str(OUTPUT_DIR / "matplotlib_config"))
-os.environ.setdefault("XDG_CACHE_HOME", str(OUTPUT_DIR / "cache"))
+os.environ.setdefault("MPLCONFIGDIR", str(CACHE_DIR))
+os.environ.setdefault("XDG_CACHE_HOME", str(CACHE_DIR))
 
 import matplotlib
 matplotlib.use("Agg")
